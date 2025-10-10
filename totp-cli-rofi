@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
 set -euf -o pipefail
 
-# configuration
-cfgDir="${XDG_CONFIG_HOME:-$HOME/.config}"
+# Initialize configuration directory and load user config if exists
+cfgDir="${XDG_CONFIG_HOME:-$HOME/.config}/totp-cli-rofi"
+[ ! -d "$cfgDir" ] && mkdir -p "$cfgDir"
 [ -f "${cfgDir}/config" ] && source "${cfgDir}/config"
-## START VARS from config
-# override GNUPGHOME var
+
+# Configuration variables with defaults
+# Custom GPG directory (required if GNUPGHOME is already set in shell environment)
 : ${MY_GPGDIR:=}
-# path to json file
-: ${MY_GPG_JSON_PATH:=${cfgDir}/totp-cli-rofi/json.pgp}
-# disable encryption
+# Path to GPG-encrypted JSON file containing TOTP secrets
+: ${MY_GPG_JSON_PATH:=${cfgDir}/json.pgp}
+# Flag to disable GPG encryption (1=disabled, 0=enabled) - NOT RECOMMENDED
 : ${MY_DISABLE_GPG:=0}
-# should code be autopasted (xdotool)
+# Auto-paste TOTP code after generation (1=enabled, 0=disabled)
 : ${MY_AUTOPASTE:=1}
-# autopaste delay ( fix for js on some web pages )
+# Delay in seconds before pressing Enter after auto-pasting (for JavaScript-heavy pages)
 : ${MY_AUTOPASTE_DELAY:=0.1}
-# should code be loaded into clipboard (xclip)
+# Auto-copy TOTP code to clipboard (1=enabled, 0=disabled)
 : ${MY_AUTOCLIPBOARD:=0}
-## END VARS from config
+
+# Apply custom GPG directory if configured
 [ -n "${MY_GPGDIR}" ] && export GNUPGHOME="${MY_GPGDIR}"
 
-# use hash of json.pgp contents as cache for names
-MY_NAMES_TXT_PATH="${TMPDIR:-/tmp}/totp-cli-rofi-names-$(sha256sum "${MY_GPG_JSON_PATH}" | cut -d ' ' -f1 | tr -d '\n')"
-
+# Helper function to evaluate boolean config values
 my_istrue() {
   case "$1" in
   y | yes | 1) return 0 ;;
   *) return 1 ;;
   esac
 }
+
+# Decrypt GPG-encrypted data or pass through plaintext based on MY_DISABLE_GPG setting
 my_decrypt() {
   returnCode=0
   my_istrue "${MY_DISABLE_GPG}" &&
@@ -43,78 +46,98 @@ my_decrypt() {
   echo "${output}"
   return "${returnCode}"
 }
+
+# Display help message
 my_help() {
   cat >&2 <<EOF
 Getting started with ${0}
 
-Create config folder
-> mkdir -pv "${cfgDir}"
-
-Create config file (optional) see "VARS from config" above
+Create config file (optional) - see configuration variables section above
 > touch "${cfgDir}/config"
 
-Create simple json file with format
-{ "TEXT NAME": {"secret":"SECRET","digits":6,"period":30,"issuer":"TEXT ISSUER",NEXT ... }
-example json and creation of gpg encrypted ${MY_GPG_JSON_PATH}
-> echo '{ "Example.com":{"secret": "P8AKZ4RBH81ROVBH","digits": 6,"period": 30,"issuer": "Example"},NEXT ... }' | gpg -ear "GPG_KEY_ID" > "${MY_GPG_JSON_PATH}"
+Create JSON file with TOTP entries in the following format:
+{
+  "Service Name": {
+    "secret": "BASE32_SECRET",
+    "digits": 6,
+    "period": 30,
+    "issuer": "Service Issuer"
+  },
+  "Another Service": { ... }
+}
 
-rofi example
+Example: Create GPG-encrypted json.pgp file
+> echo '{ "Example.com":{"secret": "P8AKZ4RBH81ROVBH","digits": 6,"period": 30,"issuer": "Example"} }' | gpg -ear "GPG_KEY_ID" > "${MY_GPG_JSON_PATH}"
+
+Usage with rofi:
 > rofi -show totp -modi totp:totp-cli-rofi
 
-cli example
-> totp-cli-rofi # use fzf to choose the name ( needs TTY )
-> totp-cli-rofi "Example Name" # select the option by Name directly
+Usage from command line:
+> totp-cli-rofi                    # Interactive selection using fzf (requires TTY)
+> totp-cli-rofi "Example.com"      # Direct selection by service name
 
-optional disable autopaste
+Configuration options:
+Disable auto-paste:
 > echo "MY_AUTOPASTE=0" >> "${cfgDir}/config"
 
-optional enable autoclipboard
+Enable auto-clipboard:
 > echo "MY_AUTOCLIPBOARD=1" >> "${cfgDir}/config"
 
-optional and not recommended - disable encryption
+Disable GPG encryption (NOT RECOMMENDED):
 > echo "MY_DISABLE_GPG=1" >> "${cfgDir}/config"
 
 EOF
 }
+
+# Validate required files and create cached names list
 my_check() {
   if [ ! -e "${MY_GPG_JSON_PATH}" ]; then
-    echo "json.pgp filepath ${MY_GPG_JSON_PATH} does not exist!" >&2
+    echo "JSON file ${MY_GPG_JSON_PATH} does not exist!" >&2
     echo ""
     my_help
     exit 1
   fi
+  
+  # Generate cache filename based on hash of encrypted JSON content
+  # This ensures the names list is regenerated when JSON file changes
+  MY_NAMES_TXT_PATH="${TMPDIR:-/tmp}/totp-cli-rofi-names-$(sha256sum "${MY_GPG_JSON_PATH}" | cut -d ' ' -f1 | tr -d '\n')"
+  
+  # Extract and cache service names if cache doesn't exist
   if [ ! -e "${MY_NAMES_TXT_PATH}" ]; then
-    # text file is missing - create it.
     namesTXTContent="$(cat "${MY_GPG_JSON_PATH}" | my_decrypt | jq -r 'keys[]')"
     [ ! -z "${namesTXTContent}" ] && echo "${namesTXTContent}" >"${MY_NAMES_TXT_PATH}"
   fi
 }
 
+# Parse command line arguments
 name="${1:-}"
 
+# Handle help flags
 [ "$name" == "--help" ] || [ "$name" == "-h" ] && {
   my_help
   exit
 }
 
+# Handle rofi mode - this section runs when called from rofi
 if [ -z "${SKIP_ROFI_PART:-}" ] && [ -n "${DISPLAY}" ] && [ -n "${ROFI_RETV:-}" ]; then
-  # rofi mode
   if [ -n "$name" ]; then
-    # option has been selected
+    # User selected an option in rofi - spawn background process to handle it
     export SKIP_ROFI_PART=1
     coproc "$0" "$name" >/dev/null 2>&1
     exec 1>&-
     exit
   else
-    # print options
+    # Initial rofi call - output available service names
     my_check
     cat "${MY_NAMES_TXT_PATH}"
     exit
   fi
 fi
 
+# Validate files exist
 my_check
 
+# Interactive selection using fzf if no name provided and running in terminal
 if [ -z "$name" ]; then
   if [ ! -t 0 ]; then
     echo "name is empty!" 1>&2
@@ -123,6 +146,7 @@ if [ -z "$name" ]; then
   name=$(cat "${MY_NAMES_TXT_PATH}" | fzf)
 fi
 
+# Extract TOTP parameters for the selected service and format for oathtool
 totpParams="$(
   cat "${MY_GPG_JSON_PATH}" |
     my_decrypt |
@@ -130,20 +154,27 @@ totpParams="$(
     tr -d '\n'
 )"
 
+# Generate TOTP code
 totp="$(oathtool --totp=sha1 ${totpParams})"
-if [ -n "${DISPLAY}" ]; then
-  # load into clipboard if required
+
+# Output handling based on display environment and configuration
+if { [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; } || { ! my_istrue "${MY_AUTOCLIPBOARD}" && ! my_istrue "${MY_AUTOPASTE}"; }; then
+  # No display or both auto features disabled - print to stdout
+  echo "$totp"
+elif [ -n "${WAYLAND_DISPLAY}" ]; then
+  # Wayland environment - use wl-copy and ydotool
+  my_istrue "${MY_AUTOCLIPBOARD}" && echo "$totp" | wl-copy
+  my_istrue "${MY_AUTOPASTE}" && {
+    ydotool type "$totp"
+    [ -n "${MY_AUTOPASTE_DELAY}" ] && sleep "${MY_AUTOPASTE_DELAY}"
+    ydotool key Return
+  }
+else
+  # X11 environment - use xclip and xdotool
   my_istrue "${MY_AUTOCLIPBOARD}" && echo "$totp" | xclip -selection clipboard
-  # autopaste if required
   my_istrue "${MY_AUTOPASTE}" && {
     xdotool type "$totp"
-    # delay pressing enter
     [ -n "${MY_AUTOPASTE_DELAY}" ] && sleep "${MY_AUTOPASTE_DELAY}"
     xdotool key Return
   }
-  # as last resort echo the code
-  ! my_istrue "${MY_AUTOCLIPBOARD}" && ! my_istrue "${MY_AUTOPASTE}" && echo "$totp"
-else
-  # not in a GUI session - echo the code
-  echo "$totp"
 fi

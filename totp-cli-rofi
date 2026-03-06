@@ -8,17 +8,17 @@ cfgDir="${XDG_CONFIG_HOME:-$HOME/.config}/totp-cli-rofi"
 
 # Configuration variables with defaults
 # Custom GPG directory (required if GNUPGHOME is already set in shell environment)
-: ${MY_GPGDIR:=}
+: "${MY_GPGDIR:=}"
 # Path to GPG-encrypted JSON file containing TOTP secrets
-: ${MY_GPG_JSON_PATH:=${cfgDir}/json.pgp}
+: "${MY_GPG_JSON_PATH:=${cfgDir}/json.pgp}"
 # Flag to disable GPG encryption (1=disabled, 0=enabled) - NOT RECOMMENDED
-: ${MY_DISABLE_GPG:=0}
+: "${MY_DISABLE_GPG:=0}"
 # Auto-paste TOTP code after generation (1=enabled, 0=disabled)
-: ${MY_AUTOPASTE:=1}
+: "${MY_AUTOPASTE:=1}"
 # Delay in seconds before pressing Enter after auto-pasting (for JavaScript-heavy pages)
-: ${MY_AUTOPASTE_DELAY:=0.1}
+: "${MY_AUTOPASTE_DELAY:=0.1}"
 # Auto-copy TOTP code to clipboard (1=enabled, 0=disabled)
-: ${MY_AUTOCLIPBOARD:=0}
+: "${MY_AUTOCLIPBOARD:=0}"
 
 # Apply custom GPG directory if configured
 [ -n "${MY_GPGDIR}" ] && export GNUPGHOME="${MY_GPGDIR}"
@@ -33,18 +33,16 @@ my_istrue() {
 
 # Decrypt GPG-encrypted data or pass through plaintext based on MY_DISABLE_GPG setting
 my_decrypt() {
-  returnCode=0
-  my_istrue "${MY_DISABLE_GPG}" &&
-    {
-      output="$(cat -)"
-      returnCode="$?"
-    } ||
-    {
-      output="$(cat - | gpg -d)"
-      returnCode="$?"
-    }
-  echo "${output}"
-  return "${returnCode}"
+  if my_istrue "${MY_DISABLE_GPG}"; then
+    cat
+  else
+    gpg -d
+  fi
+}
+
+my_has_display() {
+  [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && return 1
+  return 0
 }
 
 # Display help message
@@ -92,7 +90,7 @@ EOF
 # Validate required files and create cached names list
 my_check() {
   if [ ! -e "${MY_GPG_JSON_PATH}" ]; then
-    echo "JSON file ${MY_GPG_JSON_PATH} does not exist!" >&2
+    echo "JSON file '${MY_GPG_JSON_PATH}' does not exist!" >&2
     echo ""
     my_help
     exit 1
@@ -104,8 +102,8 @@ my_check() {
   
   # Extract and cache service names if cache doesn't exist
   if [ ! -e "${MY_NAMES_TXT_PATH}" ]; then
-    namesTXTContent="$(cat "${MY_GPG_JSON_PATH}" | my_decrypt | jq -r 'keys[]')"
-    [ ! -z "${namesTXTContent}" ] && echo "${namesTXTContent}" >"${MY_NAMES_TXT_PATH}"
+    namesTXTContent="$(my_decrypt < "${MY_GPG_JSON_PATH}" | jq -r 'keys[]')"
+    [ -n "${namesTXTContent}" ] && echo "${namesTXTContent}" >"${MY_NAMES_TXT_PATH}"
   fi
 }
 
@@ -113,13 +111,13 @@ my_check() {
 name="${1:-}"
 
 # Handle help flags
-[ "$name" == "--help" ] || [ "$name" == "-h" ] && {
+{ [ "$name" == "--help" ] || [ "$name" == "-h" ]; } && {
   my_help
   exit
 }
 
 # Handle rofi mode - this section runs when called from rofi
-if [ -z "${SKIP_ROFI_PART:-}" ] && [ -n "${DISPLAY}" ] && [ -n "${ROFI_RETV:-}" ]; then
+if my_has_display && [ -z "${SKIP_ROFI_PART:-}" ] && [ -n "${ROFI_RETV:-}" ]; then
   if [ -n "$name" ]; then
     # User selected an option in rofi - spawn background process to handle it
     export SKIP_ROFI_PART=1
@@ -143,14 +141,16 @@ if [ -z "$name" ]; then
     echo "name is empty!" 1>&2
     exit 1
   fi
-  name=$(cat "${MY_NAMES_TXT_PATH}" | fzf)
+  name=$(fzf < "${MY_NAMES_TXT_PATH}")
 fi
 
 # Extract TOTP parameters for the selected service and format for oathtool
 totpParams="$(
-  cat "${MY_GPG_JSON_PATH}" |
-    my_decrypt |
-    jq -r ".\"$name\""'|"-d \(.digits) -s \(.period) -b \(.secret)"' |
+    my_decrypt < "${MY_GPG_JSON_PATH}" |
+    jq -r --arg name "$name" '
+      .[$name] |
+      "-d \((.digits | numbers) // 6) -s \((.period | numbers) // 30) -b \(.secret | gsub(" "; ""))"
+    ' |
     tr -d '\n'
 )"
 
@@ -158,10 +158,10 @@ totpParams="$(
 totp="$(oathtool --totp=sha1 ${totpParams})"
 
 # Output handling based on display environment and configuration
-if { [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; } || { ! my_istrue "${MY_AUTOCLIPBOARD}" && ! my_istrue "${MY_AUTOPASTE}"; }; then
+if ! my_has_display || { ! my_istrue "${MY_AUTOCLIPBOARD}" && ! my_istrue "${MY_AUTOPASTE}"; }; then
   # No display or both auto features disabled - print to stdout
   echo "$totp"
-elif [ -n "${WAYLAND_DISPLAY}" ]; then
+elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
   # Wayland environment - use wl-copy and ydotool
   my_istrue "${MY_AUTOCLIPBOARD}" && echo "$totp" | wl-copy
   my_istrue "${MY_AUTOPASTE}" && {

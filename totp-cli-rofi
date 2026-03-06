@@ -163,7 +163,7 @@ if ! my_has_display || { ! my_istrue "${MY_AUTOCLIPBOARD}" && ! my_istrue "${MY_
   echo "$totp"
 elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
   # Wayland environment - use wl-copy and ydotool
-  my_istrue "${MY_AUTOCLIPBOARD}" && echo "$totp" | wl-copy
+  my_istrue "${MY_AUTOCLIPBOARD}" && echo -n "$totp" | wl-copy
   my_istrue "${MY_AUTOPASTE}" && {
     ydotool type "$totp"
     [ -n "${MY_AUTOPASTE_DELAY}" ] && sleep "${MY_AUTOPASTE_DELAY}"
@@ -171,7 +171,7 @@ elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
   }
 else
   # X11 environment - use xclip and xdotool
-  my_istrue "${MY_AUTOCLIPBOARD}" && echo "$totp" | xclip -selection clipboard
+  my_istrue "${MY_AUTOCLIPBOARD}" && echo -n "$totp" | xclip -selection clipboard
   my_istrue "${MY_AUTOPASTE}" && {
     xdotool type "$totp"
     [ -n "${MY_AUTOPASTE_DELAY}" ] && sleep "${MY_AUTOPASTE_DELAY}"
